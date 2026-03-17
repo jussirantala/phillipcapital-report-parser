@@ -292,15 +292,16 @@ def parse_trades(pdf_path, year, multipliers):
 
 
 def calc_month_totals(data, month, multipliers):
-    """Calculate aggregated buys, sells, and calculated P&L for a month across all contracts."""
+    """Calculate aggregated buys, sells, and calculated P&L for a month across all contracts.
+    Buys and sells are multiplied by the contract multiplier to give USD values."""
     d = data[month]
     total_buys = 0.0
     total_sells = 0.0
     calc_pnl = 0.0
     for sym, c in d["contracts"].items():
         mult = multipliers.get(sym, 1)
-        total_buys += c["buys"]
-        total_sells += c["sells"]
+        total_buys += c["buys"] * mult
+        total_sells += c["sells"] * mult
         calc_pnl += (c["sells"] - c["buys"]) * mult
     return total_buys, total_sells, calc_pnl
 
@@ -320,15 +321,17 @@ def print_table(data, year, eur_rate, multipliers):
         print(f"\n{'':=^100}")
         print(f"{'PER-CONTRACT BREAKDOWN':^100}")
         print(f"{'':=^100}")
-        print(f"\n{'MONTH':>8} | {'SYM':>5} | {'MULT':>5} | {'BUY QTY':>8} | {'SELL QTY':>8} | {'BUYS':>16} | {'SELLS':>16} | {'CALC P&L':>14}")
+        print(f"\n{'MONTH':>8} | {'SYM':>5} | {'MULT':>5} | {'BUY QTY':>8} | {'SELL QTY':>8} | {'BUYS (USD)':>16} | {'SELLS (USD)':>16} | {'CALC P&L':>14}")
         print("-" * 100)
         for month in months:
             label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
             for sym in sorted(data[month]["contracts"].keys()):
                 c = data[month]["contracts"][sym]
                 mult = multipliers.get(sym, 1)
-                pnl = (c["sells"] - c["buys"]) * mult
-                print(f"{label:>8} | {sym:>5} | {mult:>5} | {c['buy_qty']:>8} | {c['sell_qty']:>8} | {c['buys']:>16,.2f} | {c['sells']:>16,.2f} | {pnl:>+14,.2f}")
+                buys_usd = c["buys"] * mult
+                sells_usd = c["sells"] * mult
+                pnl = sells_usd - buys_usd
+                print(f"{label:>8} | {sym:>5} | {mult:>5} | {c['buy_qty']:>8} | {c['sell_qty']:>8} | {buys_usd:>16,.2f} | {sells_usd:>16,.2f} | {pnl:>+14,.2f}")
 
     # ── USD Table ────────────────────────────────────────────────────────────
     print(f"\n{'':=^140}")
@@ -342,7 +345,7 @@ def print_table(data, year, eur_rate, multipliers):
         d = data[month]
         buys, sells, calc_pnl = calc_month_totals(data, month, multipliers)
         net = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"]
-        diff = calc_pnl - d["pnl"]
+        diff = round(calc_pnl - d["pnl"], 2)
         label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
         print(f"{label:>8} | {buys:>14,.2f} | {sells:>14,.2f} | {calc_pnl:>+12,.2f} | {d['pnl']:>+12,.2f} | {diff:>+10,.2f} | {d['commission']:>12,.2f} | {d['clearing_fee']:>10,.2f} | {d['nfa_fee']:>8,.2f} | {net:>+14,.2f}")
         totals["buys"] += buys
@@ -353,7 +356,7 @@ def print_table(data, year, eur_rate, multipliers):
 
     print("-" * 140)
     net_total = totals["pnl"] + totals["commission"] + totals["clearing_fee"] + totals["nfa_fee"]
-    total_diff = totals["calc_pnl"] - totals["pnl"]
+    total_diff = round(totals["calc_pnl"] - totals["pnl"], 2)
     print(f"{'TOTAL':>8} | {totals['buys']:>14,.2f} | {totals['sells']:>14,.2f} | {totals['calc_pnl']:>+12,.2f} | {totals['pnl']:>+12,.2f} | {total_diff:>+10,.2f} | {totals['commission']:>12,.2f} | {totals['clearing_fee']:>10,.2f} | {totals['nfa_fee']:>8,.2f} | {net_total:>+14,.2f}")
 
     # ── Deposits & Withdrawals ───────────────────────────────────────────────
@@ -373,22 +376,23 @@ def print_table(data, year, eur_rate, multipliers):
     print(f"{'TOTAL':>8} | {totals['deposits_eur']:>16,.2f} | {totals['withdrawals_eur']:>+18,.2f} | {totals['wire_fees_usd']:>16,.2f} | {net_flow_total:>+16,.2f}")
 
     # ── EUR Table ────────────────────────────────────────────────────────────
-    print(f"\n{'':=^130}")
-    print(f"{'EUR SUMMARY  (EUR/USD rate: ' + f'{eur_rate:.4f})':^130}")
-    print(f"{'':=^130}")
+    print(f"\n{'':=^160}")
+    print(f"{'EUR SUMMARY  (EUR/USD rate: ' + f'{eur_rate:.4f})':^160}")
+    print(f"{'':=^160}")
     to_eur = 1.0 / eur_rate
-    print(f"\n{'MONTH':>8} | {'REALISED P&L':>14} | {'COMMISSION':>12} | {'CLEARING':>10} | {'NFA':>8} | {'WIRE FEES':>10} | {'NET P&L':>14} | {'DEPOSITS':>12} | {'WITHDRAWALS':>14}")
-    print("-" * 130)
+    print(f"\n{'MONTH':>8} | {'BUYS':>16} | {'SELLS':>16} | {'REALISED P&L':>14} | {'COMMISSION':>12} | {'CLEARING':>10} | {'NFA':>8} | {'WIRE FEES':>10} | {'NET P&L':>14} | {'DEPOSITS':>12} | {'WITHDRAWALS':>14}")
+    print("-" * 160)
 
     for month in months:
         d = data[month]
+        buys, sells, _ = calc_month_totals(data, month, multipliers)
         net_usd = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"] + d["wire_fees_usd"]
         label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
-        print(f"{label:>8} | {d['pnl']*to_eur:>+14,.2f} | {d['commission']*to_eur:>12,.2f} | {d['clearing_fee']*to_eur:>10,.2f} | {d['nfa_fee']*to_eur:>8,.2f} | {d['wire_fees_usd']*to_eur:>10,.2f} | {net_usd*to_eur:>+14,.2f} | {d['deposits_eur']:>12,.2f} | {d['withdrawals_eur']:>+14,.2f}")
+        print(f"{label:>8} | {buys*to_eur:>16,.2f} | {sells*to_eur:>16,.2f} | {d['pnl']*to_eur:>+14,.2f} | {d['commission']*to_eur:>12,.2f} | {d['clearing_fee']*to_eur:>10,.2f} | {d['nfa_fee']*to_eur:>8,.2f} | {d['wire_fees_usd']*to_eur:>10,.2f} | {net_usd*to_eur:>+14,.2f} | {d['deposits_eur']:>12,.2f} | {d['withdrawals_eur']:>+14,.2f}")
 
-    print("-" * 130)
+    print("-" * 160)
     total_net_usd = net_total + totals["wire_fees_usd"]
-    print(f"{'TOTAL':>8} | {totals['pnl']*to_eur:>+14,.2f} | {totals['commission']*to_eur:>12,.2f} | {totals['clearing_fee']*to_eur:>10,.2f} | {totals['nfa_fee']*to_eur:>8,.2f} | {totals['wire_fees_usd']*to_eur:>10,.2f} | {total_net_usd*to_eur:>+14,.2f} | {totals['deposits_eur']:>12,.2f} | {totals['withdrawals_eur']:>+14,.2f}")
+    print(f"{'TOTAL':>8} | {totals['buys']*to_eur:>16,.2f} | {totals['sells']*to_eur:>16,.2f} | {totals['pnl']*to_eur:>+14,.2f} | {totals['commission']*to_eur:>12,.2f} | {totals['clearing_fee']*to_eur:>10,.2f} | {totals['nfa_fee']*to_eur:>8,.2f} | {totals['wire_fees_usd']*to_eur:>10,.2f} | {total_net_usd*to_eur:>+14,.2f} | {totals['deposits_eur']:>12,.2f} | {totals['withdrawals_eur']:>+14,.2f}")
 
 
 def generate_report(data, year, pdf_path, eur_rate, multipliers):
@@ -617,8 +621,8 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
     ax_eur.axis("off")
     ax_eur.set_title(f"EUR Summary  (EUR/USD rate: {eur_rate:.4f})", color="white", fontsize=11, pad=8)
 
-    eur_cols = ["Month", "P&L", "Commiss.", "Clearing", "NFA", "Wire Fee", "Net P&L", "Deposits", "Withdrawals", "Net Flow"]
-    eur_x = [0.01, 0.09, 0.20, 0.31, 0.40, 0.49, 0.59, 0.70, 0.80, 0.91]
+    eur_cols = ["Month", "Buys", "Sells", "P&L", "Comm.", "Clear.", "NFA", "Wire", "Net P&L", "Dep", "Wdraw"]
+    eur_x = [0.01, 0.07, 0.18, 0.29, 0.39, 0.48, 0.56, 0.63, 0.71, 0.82, 0.91]
     y_start_e = 0.95
 
     for ci, label in enumerate(eur_cols):
@@ -633,18 +637,19 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
     for ri, month in enumerate(months):
         y = y_start_e - 0.06 - ri * row_h
         d = data[month]
+        buys_m, sells_m, _ = month_totals[ri]
         net_usd = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"] + d["wire_fees_usd"]
-        net_flow = d["deposits_eur"] + d["withdrawals_eur"]
         m_label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
 
         pnl_e = d["pnl"] * to_eur
         net_e = net_usd * to_eur
         pnl_color = pos_color if pnl_e >= 0 else neg_color
         net_color = pos_color if net_e >= 0 else neg_color
-        flow_color = pos_color if net_flow >= 0 else neg_color
 
         vals = [
             (m_label, "white"),
+            (f"{buys_m*to_eur:,.0f}", TICK_COL),
+            (f"{sells_m*to_eur:,.0f}", TICK_COL),
             (f"{pnl_e:+,.2f}", pnl_color),
             (f"{d['commission']*to_eur:,.2f}", "#FF9800"),
             (f"{d['clearing_fee']*to_eur:,.2f}", "#FF9800"),
@@ -653,7 +658,6 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
             (f"{net_e:+,.2f}", net_color),
             (f"{d['deposits_eur']:,.0f}" if d['deposits_eur'] else "", "#2196F3"),
             (f"{d['withdrawals_eur']:+,.0f}" if d['withdrawals_eur'] else "", neg_color),
-            (f"{net_flow:+,.0f}" if net_flow else "", flow_color),
         ]
         for ci, (txt, color) in enumerate(vals):
             ax_eur.text(eur_x[ci], y, txt,
@@ -667,10 +671,11 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
 
     total_net_usd_all = total_net + total_wire_fees
     net_flow_total = total_deps + total_wds
-    flow_color = pos_color if net_flow_total >= 0 else neg_color
 
     eur_totals = [
         ("TOTAL", "white"),
+        (f"{total_buys*to_eur:,.0f}", TICK_COL),
+        (f"{total_sells*to_eur:,.0f}", TICK_COL),
         (f"{total_pnl*to_eur:+,.2f}", pos_color if total_pnl >= 0 else neg_color),
         (f"{total_comm*to_eur:,.2f}", "#FF9800"),
         (f"{total_clear*to_eur:,.2f}", "#FF9800"),
@@ -679,7 +684,6 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
         (f"{total_net_usd_all*to_eur:+,.2f}", pos_color if total_net_usd_all >= 0 else neg_color),
         (f"{total_deps:,.0f}", "#2196F3"),
         (f"{total_wds:+,.0f}", neg_color),
-        (f"{net_flow_total:+,.0f}", flow_color),
     ]
     for ci, (txt, color) in enumerate(eur_totals):
         ax_eur.text(eur_x[ci], y_total_e, txt,
@@ -721,5 +725,154 @@ else:
 
 print()
 data = parse_trades(pdf_file, year, multipliers)
+
+# ── Debug dump ───────────────────────────────────────────────────────────────
+debug_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_output.txt")
+with open(debug_path, "w") as dbg:
+    to_eur = 1.0 / eur_rate
+    months = sorted(data.keys())
+    for month in months:
+        d = data[month]
+        label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
+        dbg.write(f"\n{'='*80}\n{label}\n{'='*80}\n")
+
+        # Per-contract raw data
+        for sym in sorted(d["contracts"].keys()):
+            c = d["contracts"][sym]
+            mult = multipliers.get(sym, 1)
+            buys_raw = c["buys"]
+            sells_raw = c["sells"]
+            buys_usd = buys_raw * mult
+            sells_usd = sells_raw * mult
+            pnl_calc = sells_usd - buys_usd
+            dbg.write(f"  {sym} (mult={mult}):\n")
+            dbg.write(f"    buy_qty={c['buy_qty']}  sell_qty={c['sell_qty']}\n")
+            dbg.write(f"    buys_raw (price*qty)  = {buys_raw:.2f}\n")
+            dbg.write(f"    sells_raw (price*qty) = {sells_raw:.2f}\n")
+            dbg.write(f"    buys_usd (raw*mult)   = {buys_usd:.2f}\n")
+            dbg.write(f"    sells_usd (raw*mult)  = {sells_usd:.2f}\n")
+            dbg.write(f"    calc_pnl (sells-buys) = {pnl_calc:.2f}\n")
+
+        # Aggregated month totals
+        buys_tot, sells_tot, calc_pnl = calc_month_totals(data, month, multipliers)
+        net = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"]
+        diff = round(calc_pnl - d["pnl"], 2)
+        dbg.write(f"\n  AGGREGATED:\n")
+        dbg.write(f"    total_buys_usd  = {buys_tot:.2f}\n")
+        dbg.write(f"    total_sells_usd = {sells_tot:.2f}\n")
+        dbg.write(f"    sells - buys    = {sells_tot - buys_tot:.2f}\n")
+        dbg.write(f"    calc_pnl        = {calc_pnl:.2f}\n")
+        dbg.write(f"    pdf_pnl         = {d['pnl']:.2f}\n")
+        dbg.write(f"    diff            = {diff:.2f}\n")
+        dbg.write(f"    commission      = {d['commission']:.2f}\n")
+        dbg.write(f"    clearing_fee    = {d['clearing_fee']:.2f}\n")
+        dbg.write(f"    nfa_fee         = {d['nfa_fee']:.2f}\n")
+        dbg.write(f"    net_pnl (pdf)   = {net:.2f}\n")
+        dbg.write(f"    deposits_eur    = {d['deposits_eur']:.2f}\n")
+        dbg.write(f"    withdrawals_eur = {d['withdrawals_eur']:.2f}\n")
+        dbg.write(f"    wire_fees_usd   = {d['wire_fees_usd']:.2f}\n")
+
+        # EUR conversions
+        dbg.write(f"\n  EUR (rate={eur_rate:.4f}, 1/rate={to_eur:.6f}):\n")
+        dbg.write(f"    buys_eur        = {buys_tot * to_eur:.2f}\n")
+        dbg.write(f"    sells_eur       = {sells_tot * to_eur:.2f}\n")
+        dbg.write(f"    sells-buys_eur  = {(sells_tot - buys_tot) * to_eur:.2f}\n")
+        dbg.write(f"    pnl_eur         = {d['pnl'] * to_eur:.2f}\n")
+        net_usd_all = net + d["wire_fees_usd"]
+        dbg.write(f"    net_pnl_eur     = {net_usd_all * to_eur:.2f}\n")
+
+    # Grand totals across all months
+    dbg.write(f"\n\n{'='*80}\n")
+    dbg.write(f"GRAND TOTALS (all months)\n")
+    dbg.write(f"{'='*80}\n")
+    g_buys = 0.0
+    g_sells = 0.0
+    g_pnl = 0.0
+    g_comm = 0.0
+    g_clear = 0.0
+    g_nfa = 0.0
+    g_wire = 0.0
+    g_deps = 0.0
+    g_wds = 0.0
+    for month in months:
+        d = data[month]
+        b, s, cp = calc_month_totals(data, month, multipliers)
+        g_buys += b
+        g_sells += s
+        g_pnl += d["pnl"]
+        g_comm += d["commission"]
+        g_clear += d["clearing_fee"]
+        g_nfa += d["nfa_fee"]
+        g_wire += d["wire_fees_usd"]
+        g_deps += d["deposits_eur"]
+        g_wds += d["withdrawals_eur"]
+    g_net = g_pnl + g_comm + g_clear + g_nfa
+    g_net_all = g_net + g_wire
+    dbg.write(f"  total_buys_usd    = {g_buys:,.2f}\n")
+    dbg.write(f"  total_sells_usd   = {g_sells:,.2f}\n")
+    dbg.write(f"  total_pnl         = {g_pnl:,.2f}\n")
+    dbg.write(f"  total_commission   = {g_comm:,.2f}\n")
+    dbg.write(f"  total_clearing     = {g_clear:,.2f}\n")
+    dbg.write(f"  total_nfa          = {g_nfa:,.2f}\n")
+    dbg.write(f"  total_wire_fees    = {g_wire:,.2f}\n")
+    dbg.write(f"  net_pnl (no wire)  = {g_net:,.2f}\n")
+    dbg.write(f"  net_pnl (w/ wire)  = {g_net_all:,.2f}\n")
+    dbg.write(f"  deposits_eur       = {g_deps:,.2f}\n")
+    dbg.write(f"  withdrawals_eur    = {g_wds:,.2f}\n")
+    dbg.write(f"\n  EUR (rate={eur_rate:.4f}):\n")
+    dbg.write(f"    total_buys_eur   = {g_buys * to_eur:,.2f}\n")
+    dbg.write(f"    total_sells_eur  = {g_sells * to_eur:,.2f}\n")
+    dbg.write(f"    total_pnl_eur    = {g_pnl * to_eur:,.2f}\n")
+    dbg.write(f"    net_pnl_eur      = {g_net_all * to_eur:,.2f}\n")
+
+# Also dump raw PDF lines that matched our parsing regexes
+with open(debug_path, "a") as dbg:
+    dbg.write(f"\n\n{'#'*80}\n")
+    dbg.write(f"RAW PDF LINES MATCHED\n")
+    dbg.write(f"{'#'*80}\n")
+    yy = year[2:]
+    current_month = None
+    with pdfplumber.open(pdf_file) as pdf:
+        for pi, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if not text:
+                continue
+            m = re.search(rf"RUN DATE\s*:\s*(\d{{2}})/\d{{2}}/{year}", text)
+            if m:
+                current_month = m.group(1) + year
+            if not current_month:
+                continue
+            for line in text.split("\n"):
+                matched = None
+                if re.match(rf"\d{{2}}/\d{{2}}/{year}\s+Realised P&L", line):
+                    matched = "PNL"
+                elif re.match(rf"\d{{2}}/\d{{2}}/{year}\s+Commission\s", line):
+                    matched = "COMM"
+                elif re.match(rf"\d{{2}}/\d{{2}}/{year}\s+Clearing Fee\s", line):
+                    matched = "CLEAR"
+                elif re.match(rf"\d{{2}}/\d{{2}}/{year}\s+NFA\s", line):
+                    matched = "NFA"
+                elif re.match(rf"\d{{2}}/\d{{2}}/{year}\s+WIRE", line):
+                    matched = "WIRE"
+                elif re.search(rf"\d+\s+CME\s+.*?\(\w+\)\s+(?:{MONTH_ABBREVS})\s+{yy}", line):
+                    matched = "TRADE"
+                if matched:
+                    dbg.write(f"  pg{pi+1:>3} [{current_month}] {matched:>5}: {line}\n")
+
+    # Also dump summary page totals (Realised P/L lines)
+    dbg.write(f"\n\n{'#'*80}\n")
+    dbg.write(f"PDF SUMMARY PAGES (Realised P/L totals)\n")
+    dbg.write(f"{'#'*80}\n")
+    with pdfplumber.open(pdf_file) as pdf:
+        for pi, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if not text:
+                continue
+            for line in text.split("\n"):
+                if "Realised P/L" in line or "TOTAL REALISED" in line:
+                    dbg.write(f"  pg{pi+1:>3}: {line}\n")
+
+print(f"Debug output written to: {debug_path}")
+
 print_table(data, year, eur_rate, multipliers)
 generate_report(data, year, pdf_file, eur_rate, multipliers)
