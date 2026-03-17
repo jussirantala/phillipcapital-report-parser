@@ -1,2 +1,4 @@
 *.pdf
 .claude
+*.png
+!example.png

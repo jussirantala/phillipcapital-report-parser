@@ -2,6 +2,7 @@ import pdfplumber
 import re
 import os
 import sys
+import json
 from collections import defaultdict
 import matplotlib
 matplotlib.use("Agg")
@@ -17,6 +18,13 @@ MONTH_NAMES = {
     "05": "May", "06": "Jun", "07": "Jul", "08": "Aug",
     "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
 }
+
+
+def load_config():
+    """Load multipliers from config.json next to this script."""
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    with open(config_path) as f:
+        return json.load(f)
 
 
 def find_pdf():
@@ -141,22 +149,29 @@ def derive_eur_usd_rate(pdf_path, year):
     return None
 
 
-def parse_trades(pdf_path, year):
-    """Parse trades from a PhillipCapital futures PDF export.
-
-    Returns dict per month with keys:
-        buys, sells, pnl, commission, clearing_fee, nfa_fee,
-        deposits_eur, withdrawals_eur, wire_fees_usd
-    """
-    data = defaultdict(lambda: {
-        "buys": 0.0, "sells": 0.0,
+def make_month_data():
+    """Create a fresh month data dict."""
+    return {
         "pnl": 0.0, "commission": 0.0,
         "clearing_fee": 0.0, "nfa_fee": 0.0,
         "deposits_eur": 0.0, "withdrawals_eur": 0.0,
         "wire_fees_usd": 0.0,
-    })
+        "contracts": defaultdict(lambda: {"buys": 0.0, "sells": 0.0, "buy_qty": 0, "sell_qty": 0}),
+    }
+
+
+def parse_trades(pdf_path, year, multipliers):
+    """Parse trades from a PhillipCapital futures PDF export.
+
+    Returns dict per month with keys:
+        pnl, commission, clearing_fee, nfa_fee,
+        deposits_eur, withdrawals_eur, wire_fees_usd,
+        contracts: {symbol: {buys, sells, buy_qty, sell_qty}}
+    """
+    data = defaultdict(make_month_data)
     current_month = None
     yy = year[2:]  # e.g. "25" from "2025"
+    unknown_symbols = set()
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -210,8 +225,6 @@ def parse_trades(pdf_path, year):
                     continue
 
                 # ── Deposits: WIRE RECEIVED (EUR column) ─────────────────
-                # Format: "02/27/2025 WIRE RECEIVED 0.00 5,000.00 0.00"
-                #          columns: Combined  EUR  USD
                 dep_match = re.match(
                     rf"\d{{2}}/\d{{2}}/{year}\s+WIRE RECEIVED\s+[\d,.]+\s+([\d,.]+)\s+[\d,.]+",
                     line,
@@ -221,7 +234,6 @@ def parse_trades(pdf_path, year):
                     continue
 
                 # ── Withdrawals: WIRE SENT (EUR column, negative) ────────
-                # Format: "04/18/2025 WIRE SENT ... 0.00 -959.59 0.00"
                 wd_match = re.match(
                     rf"\d{{2}}/\d{{2}}/{year}\s+WIRE SENT.*?\s+([-\d,.]+)\s+[\d,.]+\s*$",
                     line,
@@ -231,7 +243,6 @@ def parse_trades(pdf_path, year):
                     continue
 
                 # ── Wire fees (USD column) ───────────────────────────────
-                # Format: "04/18/2025 WIRE FEE 0.00 0.00 -25.00"
                 wf_match = re.match(
                     rf"\d{{2}}/\d{{2}}/{year}\s+WIRE FEE\s+[\d,.]+\s+[\d,.]+\s+([-\d,.]+)",
                     line,
@@ -241,56 +252,109 @@ def parse_trades(pdf_path, year):
                     continue
 
                 # ── Trade lines: buy (positive qty) ──────────────────────
-                buy_match = re.match(
-                    rf"\d{{2}}/\d{{2}}/\d{{2}}\s+(\d+)\s+CME.*?(?:{MONTH_ABBREVS})\s+{yy}\s+([\d.]+)\s+\w{{3}}$",
+                # Format: "02/28/25 3 CME MICRO MINI NQ(MNQ) Mar 25 20557.50 USD"
+                # Also handles spaced date: "0 2 / 2 8 / 2 5 3 CME ..."
+                buy_match = re.search(
+                    rf"(\d+)\s+CME\s+.*?\((\w+)\)\s+(?:{MONTH_ABBREVS})\s+{yy}\s+([\d.]+)\s+\w{{3}}$",
                     line,
                 )
-                if buy_match:
+                if buy_match and "-" not in line.split("CME")[0]:
                     qty = int(buy_match.group(1))
-                    price = float(buy_match.group(2))
-                    data[current_month]["buys"] += price * qty
+                    symbol = buy_match.group(2)
+                    price = float(buy_match.group(3))
+                    data[current_month]["contracts"][symbol]["buys"] += price * qty
+                    data[current_month]["contracts"][symbol]["buy_qty"] += qty
+                    if symbol not in multipliers:
+                        unknown_symbols.add(symbol)
                     continue
 
                 # ── Trade lines: sell (negative qty) ─────────────────────
+                # Format: "02/28/25 -3 CME ... (MNQ) Mar 25 20567.75 61.50 USD"
                 sell_match = re.search(
-                    rf"-(\d+)\s+CME.*?(?:{MONTH_ABBREVS})\s+{yy}\s+([\d.]+)\s+[-\d,.]+\s+\w{{3}}$",
+                    rf"-(\d+)\s+CME\s+.*?\((\w+)\)\s+(?:{MONTH_ABBREVS})\s+{yy}\s+([\d.]+)\s+[-\d,.]+\s+\w{{3}}$",
                     line,
                 )
                 if sell_match:
                     qty = int(sell_match.group(1))
-                    price = float(sell_match.group(2))
-                    data[current_month]["sells"] += price * qty
+                    symbol = sell_match.group(2)
+                    price = float(sell_match.group(3))
+                    data[current_month]["contracts"][symbol]["sells"] += price * qty
+                    data[current_month]["contracts"][symbol]["sell_qty"] += qty
+                    if symbol not in multipliers:
+                        unknown_symbols.add(symbol)
                     continue
+
+    if unknown_symbols:
+        print(f"\nWARNING: Unknown contract symbols (not in config.json): {', '.join(sorted(unknown_symbols))}")
+        print("Add them to config.json with the correct multiplier.\n")
 
     return data
 
 
-def print_table(data, year, eur_rate):
+def calc_month_totals(data, month, multipliers):
+    """Calculate aggregated buys, sells, and calculated P&L for a month across all contracts."""
+    d = data[month]
+    total_buys = 0.0
+    total_sells = 0.0
+    calc_pnl = 0.0
+    for sym, c in d["contracts"].items():
+        mult = multipliers.get(sym, 1)
+        total_buys += c["buys"]
+        total_sells += c["sells"]
+        calc_pnl += (c["sells"] - c["buys"]) * mult
+    return total_buys, total_sells, calc_pnl
+
+
+def print_table(data, year, eur_rate, multipliers):
     """Print a text summary table to the console."""
     months = sorted(data.keys())
     if not months:
         print("No trade data found.")
         return
 
+    # ── Per-contract breakdown ───────────────────────────────────────────────
+    all_symbols = set()
+    for month in months:
+        all_symbols.update(data[month]["contracts"].keys())
+    if all_symbols:
+        print(f"\n{'':=^100}")
+        print(f"{'PER-CONTRACT BREAKDOWN':^100}")
+        print(f"{'':=^100}")
+        print(f"\n{'MONTH':>8} | {'SYM':>5} | {'MULT':>5} | {'BUY QTY':>8} | {'SELL QTY':>8} | {'BUYS':>16} | {'SELLS':>16} | {'CALC P&L':>14}")
+        print("-" * 100)
+        for month in months:
+            label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
+            for sym in sorted(data[month]["contracts"].keys()):
+                c = data[month]["contracts"][sym]
+                mult = multipliers.get(sym, 1)
+                pnl = (c["sells"] - c["buys"]) * mult
+                print(f"{label:>8} | {sym:>5} | {mult:>5} | {c['buy_qty']:>8} | {c['sell_qty']:>8} | {c['buys']:>16,.2f} | {c['sells']:>16,.2f} | {pnl:>+14,.2f}")
+
     # ── USD Table ────────────────────────────────────────────────────────────
-    print(f"\n{'':=^130}")
-    print(f"{'USD SUMMARY':^130}")
-    print(f"{'':=^130}")
-    print(f"\n{'MONTH':>8} | {'BUYS':>14} | {'SELLS':>14} | {'REALISED P&L':>14} | {'COMMISSION':>12} | {'CLEARING':>10} | {'NFA':>8} | {'NET P&L':>14}")
-    print("-" * 115)
+    print(f"\n{'':=^140}")
+    print(f"{'USD SUMMARY':^140}")
+    print(f"{'':=^140}")
+    print(f"\n{'MONTH':>8} | {'BUYS':>14} | {'SELLS':>14} | {'CALC P&L':>12} | {'PDF P&L':>12} | {'DIFF':>10} | {'COMMISSION':>12} | {'CLEARING':>10} | {'NFA':>8} | {'NET P&L':>14}")
+    print("-" * 140)
 
     totals = defaultdict(float)
     for month in months:
         d = data[month]
+        buys, sells, calc_pnl = calc_month_totals(data, month, multipliers)
         net = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"]
+        diff = calc_pnl - d["pnl"]
         label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
-        print(f"{label:>8} | {d['buys']:>14,.2f} | {d['sells']:>14,.2f} | {d['pnl']:>+14,.2f} | {d['commission']:>12,.2f} | {d['clearing_fee']:>10,.2f} | {d['nfa_fee']:>8,.2f} | {net:>+14,.2f}")
-        for k in d:
+        print(f"{label:>8} | {buys:>14,.2f} | {sells:>14,.2f} | {calc_pnl:>+12,.2f} | {d['pnl']:>+12,.2f} | {diff:>+10,.2f} | {d['commission']:>12,.2f} | {d['clearing_fee']:>10,.2f} | {d['nfa_fee']:>8,.2f} | {net:>+14,.2f}")
+        totals["buys"] += buys
+        totals["sells"] += sells
+        totals["calc_pnl"] += calc_pnl
+        for k in ("pnl", "commission", "clearing_fee", "nfa_fee", "deposits_eur", "withdrawals_eur", "wire_fees_usd"):
             totals[k] += d[k]
 
-    print("-" * 115)
+    print("-" * 140)
     net_total = totals["pnl"] + totals["commission"] + totals["clearing_fee"] + totals["nfa_fee"]
-    print(f"{'TOTAL':>8} | {totals['buys']:>14,.2f} | {totals['sells']:>14,.2f} | {totals['pnl']:>+14,.2f} | {totals['commission']:>12,.2f} | {totals['clearing_fee']:>10,.2f} | {totals['nfa_fee']:>8,.2f} | {net_total:>+14,.2f}")
+    total_diff = totals["calc_pnl"] - totals["pnl"]
+    print(f"{'TOTAL':>8} | {totals['buys']:>14,.2f} | {totals['sells']:>14,.2f} | {totals['calc_pnl']:>+12,.2f} | {totals['pnl']:>+12,.2f} | {total_diff:>+10,.2f} | {totals['commission']:>12,.2f} | {totals['clearing_fee']:>10,.2f} | {totals['nfa_fee']:>8,.2f} | {net_total:>+14,.2f}")
 
     # ── Deposits & Withdrawals ───────────────────────────────────────────────
     print(f"\n{'MONTH':>8} | {'DEPOSITS (EUR)':>16} | {'WITHDRAWALS (EUR)':>18} | {'WIRE FEES (USD)':>16} | {'NET FLOW (EUR)':>16}")
@@ -327,7 +391,7 @@ def print_table(data, year, eur_rate):
     print(f"{'TOTAL':>8} | {totals['pnl']*to_eur:>+14,.2f} | {totals['commission']*to_eur:>12,.2f} | {totals['clearing_fee']*to_eur:>10,.2f} | {totals['nfa_fee']*to_eur:>8,.2f} | {totals['wire_fees_usd']*to_eur:>10,.2f} | {total_net_usd*to_eur:>+14,.2f} | {totals['deposits_eur']:>12,.2f} | {totals['withdrawals_eur']:>+14,.2f}")
 
 
-def generate_report(data, year, pdf_path, eur_rate):
+def generate_report(data, year, pdf_path, eur_rate, multipliers):
     """Generate a PNG dashboard report."""
     months = sorted(data.keys())
     if not months:
@@ -344,8 +408,12 @@ def generate_report(data, year, pdf_path, eur_rate):
     nfa_vals = [data[m]["nfa_fee"] for m in months]
     wire_fees = [data[m]["wire_fees_usd"] for m in months]
     net_vals = [pnl_vals[i] + comm_vals[i] + clear_vals[i] + nfa_vals[i] for i in range(len(months))]
-    buy_vals = [data[m]["buys"] for m in months]
-    sell_vals = [data[m]["sells"] for m in months]
+
+    month_totals = [calc_month_totals(data, m, multipliers) for m in months]
+    buy_vals = [t[0] for t in month_totals]
+    sell_vals = [t[1] for t in month_totals]
+    calc_pnl_vals = [t[2] for t in month_totals]
+
     dep_vals = [data[m]["deposits_eur"] for m in months]
     wd_vals = [data[m]["withdrawals_eur"] for m in months]
     cumulative = list(np.cumsum(net_vals))
@@ -496,6 +564,7 @@ def generate_report(data, year, pdf_path, eur_rate):
     for ri, month in enumerate(months):
         y = y_start - 0.06 - ri * row_h
         d = data[month]
+        buys_m, sells_m, calc_m = month_totals[ri]
         net = d["pnl"] + d["commission"] + d["clearing_fee"] + d["nfa_fee"]
         m_label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
 
@@ -504,8 +573,8 @@ def generate_report(data, year, pdf_path, eur_rate):
 
         vals = [
             (m_label, "white"),
-            (f"${d['buys']:,.0f}", TICK_COL),
-            (f"${d['sells']:,.0f}", TICK_COL),
+            (f"${buys_m:,.0f}", TICK_COL),
+            (f"${sells_m:,.0f}", TICK_COL),
             (f"${d['pnl']:+,.2f}", pnl_color),
             (f"${d['commission']:,.2f}", "#FF9800"),
             (f"${d['clearing_fee']:,.2f}", "#FF9800"),
@@ -627,6 +696,10 @@ def generate_report(data, year, pdf_path, eur_rate):
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+config = load_config()
+multipliers = config["multipliers"]
+print(f"Loaded {len(multipliers)} contract multipliers from config.json")
+
 pdf_file = find_pdf()
 print(f"\nParsing: {os.path.basename(pdf_file)}\n")
 year = pick_year(pdf_file)
@@ -647,6 +720,6 @@ else:
     eur_rate = float(input("Enter EUR/USD rate (e.g. 1.08): ").strip())
 
 print()
-data = parse_trades(pdf_file, year)
-print_table(data, year, eur_rate)
-generate_report(data, year, pdf_file, eur_rate)
+data = parse_trades(pdf_file, year, multipliers)
+print_table(data, year, eur_rate, multipliers)
+generate_report(data, year, pdf_file, eur_rate, multipliers)

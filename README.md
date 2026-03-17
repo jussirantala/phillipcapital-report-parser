@@ -60,7 +60,7 @@ The script will automatically find PDF files in the current directory:
 
 The script generates a visual dashboard saved as `phillipcapital_report_<year>.png`:
 
-![Example Report](phillipcapital_report_2025.png)
+![Example Report](example.png)
 
 The report includes:
 - **Monthly Realised P&L** bar chart (before fees)
@@ -73,7 +73,8 @@ The report includes:
 
 The script also prints detailed tables to the console:
 
-- **USD Summary** — per-month buys, sells, realised P&L, commission, clearing fees, NFA fees, net P&L
+- **Per-Contract Breakdown** — buys/sells per contract symbol (MNQ, MES, M2K, etc.) with correct multiplier applied
+- **USD Summary** — per-month buys, sells, calculated P&L, PDF P&L (cross-check), commission, clearing fees, NFA fees, net P&L
 - **Deposits & Withdrawals** — WIRE RECEIVED (EUR), WIRE SENT (EUR), wire fees (USD), net flow
 - **EUR Summary** — all USD amounts converted to EUR at the derived (or user-specified) exchange rate
 
@@ -81,11 +82,41 @@ The script also prints detailed tables to the console:
 
 The script automatically derives the EUR/USD rate from deposit data in the PDF (pairing WIRE RECEIVED amounts with their USDE adjustments). You can accept the derived rate or enter a custom one.
 
-## Supported Contracts
+## Contract Multipliers
 
-Currently parses CME Micro futures (e.g. MNQ). The contract multiplier in the P&L calculation defaults to $2 (MNQ) — adjust the multiplier in the script for other products.
+Contract point multipliers are configured in `config.json`. The file ships with these defaults:
+
+| Symbol | Contract | $/Point |
+|--------|----------|--------:|
+| MNQ | Micro E-mini Nasdaq-100 | $2 |
+| MES | Micro E-mini S&P 500 | $5 |
+| M2K | Micro E-mini Russell 2000 | $5 |
+| MYM | Micro E-mini Dow | $0.50 |
+| NQ | E-mini Nasdaq-100 | $20 |
+| ES | E-mini S&P 500 | $50 |
+| RTY | E-mini Russell 2000 | $50 |
+| YM | E-mini Dow | $5 |
+| CL | WTI Crude Oil | $1,000 |
+| MCL | Micro WTI Crude Oil | $100 |
+| GC | Gold (COMEX) | $100 |
+| MGC | Micro Gold (COMEX) | $10 |
+
+To add a new contract, add its symbol and dollar-per-point multiplier to `config.json`:
+
+```json
+{
+    "multipliers": {
+        "MNQ": 2,
+        "MES": 5,
+        "NEW_SYMBOL": 50
+    }
+}
+```
+
+The parser will warn you if it encounters a contract symbol not present in `config.json`.
 
 ## Notes
 
 - The parser detects month boundaries from `RUN DATE` fields in the PDF.
 - Designed for the specific PDF layout exported by PhillipCapital (PVMH combined reports).
+- P&L cross-check: the "CALC P&L" column (computed from buys/sells with contract multipliers) is verified against the "PDF P&L" column (extracted from the PDF's Realised P&L lines).
