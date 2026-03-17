@@ -56,15 +56,30 @@ The script will automatically find PDF files in the current directory:
 
 ## Output
 
-The script prints a per-month summary table:
+### PNG Dashboard Report
 
-```
-MONTH | BUYS (price*qty) | SELLS (price*qty) | NET P&L | COMMISSION
-```
+The script generates a visual dashboard saved as `phillipcapital_report_<year>.png`:
 
-- **Buys/Sells** — aggregated `price * quantity` for long and short trades
-- **Net P&L** — `(sells - buys) * contract multiplier` (default: $2 for MNQ; adjust for MES $5, etc.)
-- **Commission** — total commission charges extracted from the report
+![Example Report](phillipcapital_report_2025.png)
+
+The report includes:
+- **Monthly Realised P&L** bar chart (before fees)
+- **Cumulative P&L** line chart (after all fees)
+- **Monthly Net P&L** waterfall (after all fees, with fee markers)
+- **USD Summary** table with buys, sells, P&L, all fees, deposits, and withdrawals
+- **EUR Summary** table with all USD amounts converted using the derived EUR/USD rate
+
+### Console Output
+
+The script also prints detailed tables to the console:
+
+- **USD Summary** — per-month buys, sells, realised P&L, commission, clearing fees, NFA fees, net P&L
+- **Deposits & Withdrawals** — WIRE RECEIVED (EUR), WIRE SENT (EUR), wire fees (USD), net flow
+- **EUR Summary** — all USD amounts converted to EUR at the derived (or user-specified) exchange rate
+
+### EUR/USD Rate
+
+The script automatically derives the EUR/USD rate from deposit data in the PDF (pairing WIRE RECEIVED amounts with their USDE adjustments). You can accept the derived rate or enter a custom one.
 
 ## Supported Contracts
 
