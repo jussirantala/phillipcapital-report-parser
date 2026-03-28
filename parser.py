@@ -454,6 +454,15 @@ def calc_finnish_tax(data, year, eur_rate, multipliers):
     return disposals, luovutushinnat, luovutusvoitot, luovutustappiot
 
 
+def _fi(v, sign=False):
+    """Format a number Finnish style: no thousands separator, comma as decimal."""
+    if sign:
+        s = f"{v:+.2f}"
+    else:
+        s = f"{v:.2f}"
+    return s.replace(".", ",")
+
+
 def print_finnish_tax(data, year, eur_rate, multipliers):
     """Print Finnish tax summary (veroilmoitus) to the console."""
     disposals, luovutushinnat, luovutusvoitot, luovutustappiot = \
@@ -474,15 +483,15 @@ def print_finnish_tax(data, year, eur_rate, multipliers):
     print("-" * 140)
 
     for d in disposals:
-        print(f"{d['month']:>8} | {d['symbol']:>5} | {d['sell_qty']:>8} | {d['buy_qty']:>8} | {d['luovutushinta_eur']:>16,.2f} | {d['kulut_eur']:>12,.2f} | {d['hankintameno_eur']:>16,.2f} | {d['tulos_eur']:>+16,.2f}")
+        print(f"{d['month']:>8} | {d['symbol']:>5} | {d['sell_qty']:>8} | {d['buy_qty']:>8} | {_fi(d['luovutushinta_eur']):>16} | {_fi(d['kulut_eur']):>12} | {_fi(d['hankintameno_eur']):>16} | {_fi(d['tulos_eur'], sign=True):>16}")
 
     print("-" * 140)
     total_hankintameno = sum(d["hankintameno_eur"] for d in disposals)
-    print(f"\n  Luovutushinnat yhteensä   (Total sale prices)    : {luovutushinnat:>16,.2f} EUR")
-    print(f"  Hankintamenot yhteensä    (Total acquisition cost): {total_hankintameno:>16,.2f} EUR  (incl. kulut {total_kulut:,.2f})")
-    print(f"  Luovutusvoitot yhteensä   (Total capital gains)   : {luovutusvoitot:>+16,.2f} EUR")
-    print(f"  Luovutustappiot yhteensä  (Total capital losses)  : {luovutustappiot:>+16,.2f} EUR")
-    print(f"  Netto (voitot + tappiot)  (Net gain/loss)         : {luovutusvoitot + luovutustappiot:>+16,.2f} EUR")
+    print(f"\n  Luovutushinnat yhteensä   (Total sale prices)    : {_fi(luovutushinnat):>16} EUR")
+    print(f"  Hankintamenot yhteensä    (Total acquisition cost): {_fi(total_hankintameno):>16} EUR  (incl. kulut {_fi(total_kulut)})")
+    print(f"  Luovutusvoitot yhteensä   (Total capital gains)   : {_fi(luovutusvoitot, sign=True):>16} EUR")
+    print(f"  Luovutustappiot yhteensä  (Total capital losses)  : {_fi(luovutustappiot, sign=True):>16} EUR")
+    print(f"  Netto (voitot + tappiot)  (Net gain/loss)         : {_fi(luovutusvoitot + luovutustappiot, sign=True):>16} EUR")
     print()
 
 
