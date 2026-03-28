@@ -395,6 +395,97 @@ def print_table(data, year, eur_rate, multipliers):
     print(f"{'TOTAL':>8} | {totals['buys']*to_eur:>16,.2f} | {totals['sells']*to_eur:>16,.2f} | {totals['pnl']*to_eur:>+14,.2f} | {totals['commission']*to_eur:>12,.2f} | {totals['clearing_fee']*to_eur:>10,.2f} | {totals['nfa_fee']*to_eur:>8,.2f} | {totals['wire_fees_usd']*to_eur:>10,.2f} | {total_net_usd*to_eur:>+14,.2f} | {totals['deposits_eur']:>12,.2f} | {totals['withdrawals_eur']:>+14,.2f}")
 
 
+def calc_finnish_tax(data, year, eur_rate, multipliers):
+    """Calculate Finnish tax figures (veroilmoitus) per disposal.
+
+    Each symbol/month combination with both buys and sells is one disposal (luovutus).
+    Fees (commission, clearing, NFA, wire) are allocated proportionally by contract
+    count and added to hankintameno (acquisition cost), per Finnish tax rules.
+    Returns a list of disposal dicts and the three summary totals.
+    """
+    to_eur = 1.0 / eur_rate
+    months = sorted(data.keys())
+    disposals = []
+
+    for month in months:
+        d = data[month]
+        label = f"{MONTH_NAMES.get(month[:2], month[:2])} {year}"
+
+        # Month's total fees in EUR
+        month_fees_eur = abs(d["commission"] + d["clearing_fee"] + d["nfa_fee"] + d["wire_fees_usd"]) * to_eur
+
+        # Total contracts traded this month (for proportional fee allocation)
+        total_contracts = sum(c["buy_qty"] + c["sell_qty"] for c in d["contracts"].values())
+
+        for sym in sorted(d["contracts"].keys()):
+            c = d["contracts"][sym]
+            mult = multipliers.get(sym, 1)
+            buys_usd = c["buys"] * mult
+            sells_usd = c["sells"] * mult
+
+            if c["sell_qty"] == 0:
+                continue  # no disposal if nothing sold
+
+            # Allocate fees proportionally by contract count
+            sym_contracts = c["buy_qty"] + c["sell_qty"]
+            kulut_eur = month_fees_eur * (sym_contracts / total_contracts) if total_contracts > 0 else 0.0
+
+            # Luovutushinta = sale proceeds
+            # Hankintameno = acquisition cost + allocated fees (kulut)
+            luovutushinta_eur = sells_usd * to_eur
+            hankintameno_eur = buys_usd * to_eur + kulut_eur
+            tulos_eur = luovutushinta_eur - hankintameno_eur
+
+            disposals.append({
+                "month": label,
+                "symbol": sym,
+                "buy_qty": c["buy_qty"],
+                "sell_qty": c["sell_qty"],
+                "luovutushinta_eur": luovutushinta_eur,
+                "hankintameno_eur": hankintameno_eur,
+                "kulut_eur": kulut_eur,
+                "tulos_eur": tulos_eur,
+            })
+
+    luovutushinnat = sum(d["luovutushinta_eur"] for d in disposals)
+    luovutusvoitot = sum(d["tulos_eur"] for d in disposals if d["tulos_eur"] > 0)
+    luovutustappiot = sum(d["tulos_eur"] for d in disposals if d["tulos_eur"] < 0)
+
+    return disposals, luovutushinnat, luovutusvoitot, luovutustappiot
+
+
+def print_finnish_tax(data, year, eur_rate, multipliers):
+    """Print Finnish tax summary (veroilmoitus) to the console."""
+    disposals, luovutushinnat, luovutusvoitot, luovutustappiot = \
+        calc_finnish_tax(data, year, eur_rate, multipliers)
+
+    if not disposals:
+        print("\nNo disposals found for Finnish tax calculation.")
+        return
+
+    total_kulut = sum(d["kulut_eur"] for d in disposals)
+
+    print(f"\n{'':=^140}")
+    print(f"{'FINNISH TAX SUMMARY  /  VEROILMOITUS  (EUR)':^140}")
+    print(f"{'':=^140}")
+    print(f"\n  EUR/USD rate: {eur_rate:.4f}")
+    print(f"  Kulut (fees) are included in hankintameno, allocated proportionally by contract count.")
+    print(f"\n{'MONTH':>8} | {'SYM':>5} | {'SELL QTY':>8} | {'BUY QTY':>8} | {'Luovutushinta':>16} | {'Kulut':>12} | {'Hankintameno':>16} | {'Voitto/Tappio':>16}")
+    print("-" * 140)
+
+    for d in disposals:
+        print(f"{d['month']:>8} | {d['symbol']:>5} | {d['sell_qty']:>8} | {d['buy_qty']:>8} | {d['luovutushinta_eur']:>16,.2f} | {d['kulut_eur']:>12,.2f} | {d['hankintameno_eur']:>16,.2f} | {d['tulos_eur']:>+16,.2f}")
+
+    print("-" * 140)
+    total_hankintameno = sum(d["hankintameno_eur"] for d in disposals)
+    print(f"\n  Luovutushinnat yhteensä   (Total sale prices)    : {luovutushinnat:>16,.2f} EUR")
+    print(f"  Hankintamenot yhteensä    (Total acquisition cost): {total_hankintameno:>16,.2f} EUR  (incl. kulut {total_kulut:,.2f})")
+    print(f"  Luovutusvoitot yhteensä   (Total capital gains)   : {luovutusvoitot:>+16,.2f} EUR")
+    print(f"  Luovutustappiot yhteensä  (Total capital losses)  : {luovutustappiot:>+16,.2f} EUR")
+    print(f"  Netto (voitot + tappiot)  (Net gain/loss)         : {luovutusvoitot + luovutustappiot:>+16,.2f} EUR")
+    print()
+
+
 def generate_report(data, year, pdf_path, eur_rate, multipliers):
     """Generate a PNG dashboard report."""
     months = sorted(data.keys())
@@ -448,18 +539,18 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
         return f"${x/1000:+.1f}k" if abs(x) >= 1000 else f"${x:+.0f}"
 
     # ── Layout ───────────────────────────────────────────────────────────────
-    fig = plt.figure(figsize=(20, 18), facecolor="#1a1a2e")
+    fig = plt.figure(figsize=(20, 22), facecolor="#1a1a2e")
     fig.suptitle(
         f"PhillipCapital Futures Report  —  {year}",
         fontsize=18, fontweight="bold", color="white", y=0.99,
     )
 
     gs = gridspec.GridSpec(
-        4, 2, figure=fig,
+        5, 2, figure=fig,
         hspace=0.45, wspace=0.3,
         left=0.06, right=0.97,
         top=0.96, bottom=0.03,
-        height_ratios=[1, 1, 1.2, 1.0],
+        height_ratios=[1, 1, 1.2, 1.0, 1.0],
     )
 
     ax_bar = fig.add_subplot(gs[0, 0])   # Monthly P&L bars
@@ -467,8 +558,9 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
     ax_wf  = fig.add_subplot(gs[1, :])   # Net P&L after fees waterfall
     ax_sum = fig.add_subplot(gs[2, :])   # USD Summary table
     ax_eur = fig.add_subplot(gs[3, :])   # EUR Summary table
+    ax_tax = fig.add_subplot(gs[4, :])   # Finnish tax summary
 
-    for ax in (ax_bar, ax_cum, ax_wf, ax_sum, ax_eur):
+    for ax in (ax_bar, ax_cum, ax_wf, ax_sum, ax_eur, ax_tax):
         ax.set_facecolor(PANEL_BG)
         ax.tick_params(colors=TICK_COL, labelsize=9)
         for spine in ax.spines.values():
@@ -691,6 +783,72 @@ def generate_report(data, year, pdf_path, eur_rate, multipliers):
                     color=color, fontsize=9, va="top", fontweight="bold",
                     family="monospace")
 
+    # ── 6. Finnish Tax Summary (Veroilmoitus) ──────────────────────────────
+    ax_tax.axis("off")
+    ax_tax.set_title("Veroilmoitus  —  Finnish Tax Summary (EUR)", color="white", fontsize=11, pad=8)
+
+    disposals, luovutushinnat, luovutusvoitot, luovutustappiot = \
+        calc_finnish_tax(data, year, eur_rate, multipliers)
+
+    total_kulut = sum(d["kulut_eur"] for d in disposals)
+    total_hankintameno = sum(d["hankintameno_eur"] for d in disposals)
+
+    tax_cols = ["Month", "Symbol", "Sell Qty", "Buy Qty", "Luovutushinta", "Kulut", "Hankintameno", "Voitto/Tappio"]
+    tax_x = [0.01, 0.10, 0.18, 0.27, 0.36, 0.50, 0.61, 0.78]
+    y_start_t = 0.95
+
+    # Note about fees
+    ax_tax.text(0.01, y_start_t + 0.03, "Kulut (fees) included in hankintameno, allocated by contract count",
+                transform=ax_tax.transAxes, color="#888888", fontsize=7, va="top", family="monospace")
+
+    for ci, label in enumerate(tax_cols):
+        ax_tax.text(tax_x[ci], y_start_t, label,
+                    transform=ax_tax.transAxes,
+                    color="#aaddff", fontsize=8, fontweight="bold",
+                    va="top", family="monospace")
+
+    ax_tax.plot([0.01, 0.99], [y_start_t - 0.03, y_start_t - 0.03],
+                color="#3a3a5a", linewidth=0.8, transform=ax_tax.transAxes)
+
+    tax_row_h = 0.055
+    for ri, disp in enumerate(disposals):
+        y = y_start_t - 0.06 - ri * tax_row_h
+        result_color = pos_color if disp["tulos_eur"] >= 0 else neg_color
+
+        vals = [
+            (disp["month"], "white"),
+            (disp["symbol"], TICK_COL),
+            (str(disp["sell_qty"]), TICK_COL),
+            (str(disp["buy_qty"]), TICK_COL),
+            (f"\u20ac{disp['luovutushinta_eur']:,.2f}", TICK_COL),
+            (f"\u20ac{disp['kulut_eur']:,.2f}", "#FF9800"),
+            (f"\u20ac{disp['hankintameno_eur']:,.2f}", TICK_COL),
+            (f"\u20ac{disp['tulos_eur']:+,.2f}", result_color),
+        ]
+        for ci, (txt, color) in enumerate(vals):
+            ax_tax.text(tax_x[ci], y, txt,
+                        transform=ax_tax.transAxes,
+                        color=color, fontsize=8, va="top", family="monospace")
+
+    # Summary totals
+    y_totals = y_start_t - 0.06 - len(disposals) * tax_row_h
+    ax_tax.plot([0.01, 0.99], [y_totals + tax_row_h * 0.45, y_totals + tax_row_h * 0.45],
+                color="#3a3a5a", linewidth=0.8, transform=ax_tax.transAxes)
+
+    summary_lines = [
+        (f"Luovutushinnat yht.   (Total sale prices):     \u20ac{luovutushinnat:,.2f}", TICK_COL),
+        (f"Hankintamenot yht.    (Total acquisition cost): \u20ac{total_hankintameno:,.2f}  (incl. kulut \u20ac{total_kulut:,.2f})", TICK_COL),
+        (f"Luovutusvoitot yht.   (Total capital gains):   \u20ac{luovutusvoitot:+,.2f}", pos_color),
+        (f"Luovutustappiot yht.  (Total capital losses):  \u20ac{luovutustappiot:+,.2f}", neg_color),
+        (f"Netto  (Net gain/loss):                        \u20ac{luovutusvoitot + luovutustappiot:+,.2f}",
+         pos_color if (luovutusvoitot + luovutustappiot) >= 0 else neg_color),
+    ]
+    for si, (txt, color) in enumerate(summary_lines):
+        ax_tax.text(0.01, y_totals - si * tax_row_h, txt,
+                    transform=ax_tax.transAxes,
+                    color=color, fontsize=9, va="top", fontweight="bold",
+                    family="monospace")
+
     # ── Save ─────────────────────────────────────────────────────────────────
     script_dir = os.path.dirname(os.path.abspath(__file__)) or os.getcwd()
     out_path = os.path.join(script_dir, f"phillipcapital_report_{year}.png")
@@ -875,4 +1033,5 @@ with open(debug_path, "a") as dbg:
 print(f"Debug output written to: {debug_path}")
 
 print_table(data, year, eur_rate, multipliers)
+print_finnish_tax(data, year, eur_rate, multipliers)
 generate_report(data, year, pdf_file, eur_rate, multipliers)

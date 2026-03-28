@@ -3,3 +3,4 @@
 *.png
 !example.png
 debug_output.txt
+__pycache__
